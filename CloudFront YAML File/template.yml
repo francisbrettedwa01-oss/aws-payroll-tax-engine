@@ -1,0 +1,326 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Final Project - Annual Payroll Tax Estimator
+
+Parameters:
+  # Captures the user's email during deployment so CloudFormation can hook it into the alert topic automatically.
+  MyEmail:
+    Type: String
+    Description: Email to receive payroll notifications
+    Default: student@example.com
+
+Resources:
+  # Creates a NoSQL DynamoDB table using on-demand billing so we only incur charges per read/write without needing capacity planning.
+  # CalculationId is set as the primary partition key (HASH) to uniquely store each tax audit record.
+  TaxAuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PayrollTaxAuditLog
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: CalculationId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: CalculationId
+          KeyType: HASH
+
+  # Sets up an Amazon SNS topic and subscribes the parameter email to send notification alerts after each calculation.
+  TaxAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: PayrollTaxAlerts
+      Subscription:
+        - Endpoint: !Ref MyEmail
+          Protocol: email
+
+  # Provisions an S3 storage bucket configured for static website hosting with standard index and error HTML documents.
+  # Explicitly disables S3 Block Public Access on this bucket so the public website policy can attach.
+  TaxWebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  # Attaches a public read policy to the S3 bucket so web browsers can download and render the frontend HTML file.
+  TaxWebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TaxWebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${TaxWebBucket}/*
+
+  # Configures the IAM execution role allowing AWS Lambda to assume it and access AWS services.
+  # Attaches standard AWS managed policies learned in class labs to handle logging, DynamoDB writes, and SNS publishing.
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+
+  # Provisions the serverless Python Lambda compute function with environment variables pointing to our DynamoDB table and SNS topic.
+  # Contains inline Python logic that calculates annualized payroll withholding, writes string values to DynamoDB, and sends an email alert.
+  TaxCalculatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: PayrollTaxEstimator
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TaxAuditTable
+          TOPIC_ARN: !Ref TaxAlertTopic
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import uuid
+          import boto3
+
+          # Federal Progressive Withholding (IRS Pub 15-T Annual Tiers)
+          def calculate_federal_tax(taxable_income):
+              if taxable_income <= 0:
+                  return 0.0
+              elif taxable_income <= 11600.0:
+                  return taxable_income * 0.10
+              elif taxable_income > 11600.0 and taxable_income <= 47150.0:
+                  return (11600.0 * 0.10) + ((taxable_income - 11600.0) * 0.12)
+              elif taxable_income > 47150.0 and taxable_income <= 100525.0:
+                  return (11600.0 * 0.10) + ((47150.0 - 11600.0) * 0.12) + ((taxable_income - 47150.0) * 0.22)
+              elif taxable_income > 100525.0 and taxable_income <= 191950.0:
+                  return (11600.0 * 0.10) + ((47150.0 - 11600.0) * 0.12) + ((100525.0 - 47150.0) * 0.22) + ((taxable_income - 100525.0) * 0.24)
+              elif taxable_income > 191950.0 and taxable_income <= 243725.0:
+                  return (11600.0 * 0.10) + ((47150.0 - 11600.0) * 0.12) + ((100525.0 - 47150.0) * 0.22) + ((191950.0 - 100525.0) * 0.24) + ((taxable_income - 191950.0) * 0.32)
+              elif taxable_income > 243725.0 and taxable_income <= 609350.0:
+                  return (11600.0 * 0.10) + ((47150.0 - 11600.0) * 0.12) + ((100525.0 - 47150.0) * 0.22) + ((191950.0 - 100525.0) * 0.24) + ((243725.0 - 191950.0) * 0.32) + ((taxable_income - 243725.0) * 0.35)
+              else:
+                  return (11600.0 * 0.10) + ((47150.0 - 11600.0) * 0.12) + ((100525.0 - 47150.0) * 0.22) + ((191950.0 - 100525.0) * 0.24) + ((243725.0 - 191950.0) * 0.32) + ((609350.0 - 243725.0) * 0.35) + ((taxable_income - 609350.0) * 0.37)
+
+          # California State Progressive Withholding (CA EDD DE 44 Annual Tiers)
+          def calculate_california_tax(taxable_income):
+              if taxable_income <= 0:
+                  return 0.0
+              elif taxable_income <= 10412.0:
+                  return taxable_income * 0.01
+              elif taxable_income > 10412.0 and taxable_income <= 24684.0:
+                  return (10412.0 * 0.01) + ((taxable_income - 10412.0) * 0.02)
+              elif taxable_income > 24684.0 and taxable_income <= 38959.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((taxable_income - 24684.0) * 0.04)
+              elif taxable_income > 38959.0 and taxable_income <= 54081.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((taxable_income - 38959.0) * 0.06)
+              elif taxable_income > 54081.0 and taxable_income <= 68350.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((54081.0 - 38959.0) * 0.06) + ((taxable_income - 54081.0) * 0.08)
+              elif taxable_income > 68350.0 and taxable_income <= 349137.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((54081.0 - 38959.0) * 0.06) + ((68350.0 - 54081.0) * 0.08) + ((taxable_income - 68350.0) * 0.093)
+              elif taxable_income > 349137.0 and taxable_income <= 418961.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((54081.0 - 38959.0) * 0.06) + ((68350.0 - 54081.0) * 0.08) + ((349137.0 - 68350.0) * 0.093) + ((taxable_income - 349137.0) * 0.103)
+              elif taxable_income > 418961.0 and taxable_income <= 698271.0:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((54081.0 - 38959.0) * 0.06) + ((68350.0 - 54081.0) * 0.08) + ((349137.0 - 68350.0) * 0.093) + ((418961.0 - 349137.0) * 0.103) + ((taxable_income - 418961.0) * 0.113)
+              else:
+                  return (10412.0 * 0.01) + ((24684.0 - 10412.0) * 0.02) + ((38959.0 - 24684.0) * 0.04) + ((54081.0 - 38959.0) * 0.06) + ((68350.0 - 54081.0) * 0.08) + ((349137.0 - 68350.0) * 0.093) + ((418961.0 - 349137.0) * 0.103) + ((698271.0 - 418961.0) * 0.113) + ((taxable_income - 698271.0) * 0.123)
+
+          def lambda_handler(event, context):
+              dynamodb = boto3.resource('dynamodb')
+              sns = boto3.client('sns')
+              table = dynamodb.Table(os.environ['TABLE_NAME'])
+              topic_arn = os.environ['TOPIC_ARN']
+
+              # Read projected annual gross pay and pre-tax deductions from POST request body
+              body = json.loads(event.get('body', '{}'))
+              gross_pay = float(body.get('grossPay', 0))
+              pre_tax_deductions = float(body.get('preTaxDeductions', 0))
+
+              # Calculate Taxable Wages for Federal and State progressive income withholding
+              taxable_wages = max(0.0, gross_pay - pre_tax_deductions)
+
+              # 1. Federal and California Progressive Withholding
+              fed_tax = calculate_federal_tax(taxable_wages)
+              ca_tax = calculate_california_tax(taxable_wages)
+
+              # 2. Social Security Tax (6.2% up to annual statutory maximum taxable wage ceiling of $168,600)
+              SS_CAP = 168600.0
+              if gross_pay > SS_CAP:
+                  social_security = SS_CAP * 0.062
+              else:
+                  social_security = gross_pay * 0.062
+
+              # 3. Medicare Tax (1.45% up to $200,000; excess over $200,000 taxed at 2.35%)
+              if gross_pay <= 200000.0:
+                  medicare = gross_pay * 0.0145
+              else:
+                  medicare = (200000.0 * 0.0145) + ((gross_pay - 200000.0) * 0.0235)
+
+              # 4. California SDI (1.1% across total gross wages)
+              ca_sdi = gross_pay * 0.011
+
+              # Totals
+              total_withholding = fed_tax + ca_tax + social_security + medicare + ca_sdi
+              net_pay = gross_pay - pre_tax_deductions - total_withholding
+              calc_id = str(uuid.uuid4())
+
+              # Save calculation record in DynamoDB (converting numbers to strings to avoid DynamoDB float errors)
+              table.put_item(
+                  Item={
+                      'CalculationId': calc_id,
+                      'GrossPay': str(gross_pay),
+                      'PreTaxDeductions': str(pre_tax_deductions),
+                      'TaxableWages': str(round(taxable_wages, 2)),
+                      'FederalWithholding': str(round(fed_tax, 2)),
+                      'StateWithholding': str(round(ca_tax, 2)),
+                      'SocialSecurity': str(round(social_security, 2)),
+                      'Medicare': str(round(medicare, 2)),
+                      'SDI': str(round(ca_sdi, 2)),
+                      'TotalWithholding': str(round(total_withholding, 2)),
+                      'NetPay': str(round(net_pay, 2))
+                  }
+              )
+
+              # Publish summary alert email via SNS
+              sns.publish(
+                  TopicArn=topic_arn,
+                  Subject="Annual Payroll Withholding Estimate",
+                  Message=(
+                      "Estimate ID: " + calc_id + "\n"
+                      "Gross Pay: $" + str(gross_pay) + "\n"
+                      "Pre-Tax Deductions: $" + str(pre_tax_deductions) + "\n"
+                      "Taxable Wages: $" + str(round(taxable_wages, 2)) + "\n"
+                      "Federal Withholding: $" + str(round(fed_tax, 2)) + "\n"
+                      "CA State Withholding: $" + str(round(ca_tax, 2)) + "\n"
+                      "Social Security: $" + str(round(social_security, 2)) + "\n"
+                      "Medicare: $" + str(round(medicare, 2)) + "\n"
+                      "CA SDI: $" + str(round(ca_sdi, 2)) + "\n"
+                      "Estimated Annual Net Pay: $" + str(round(net_pay, 2))
+                  )
+              )
+
+              # Response payload returned to frontend
+              result = {
+                  'calculationId': calc_id,
+                  'grossPay': gross_pay,
+                  'preTaxDeductions': pre_tax_deductions,
+                  'taxableWages': round(taxable_wages, 2),
+                  'federalTax': round(fed_tax, 2),
+                  'stateTax': round(ca_tax, 2),
+                  'socialSecurity': round(social_security, 2),
+                  'medicare': round(medicare, 2),
+                  'sdi': round(ca_sdi, 2),
+                  'totalDeductions': round(total_withholding, 2),
+                  'netPay': round(net_pay, 2)
+              }
+
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*'
+                  },
+                  'body': json.dumps(result)
+              }
+
+  # Creates the top-level REST API Gateway container to expose our backend over public HTTPS.
+  TaxApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: PayrollTaxApi
+      Description: REST API for payroll estimator
+
+  # Defines the '/calculate' URL route under the root path to handle payroll requests.
+  TaxApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref TaxApi
+      ParentId: !GetAtt TaxApi.RootResourceId
+      PathPart: calculate
+
+  # Sets up a POST method using Lambda Proxy Integration so the complete HTTP payload is passed directly to the Python handler.
+  TaxApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TaxApi
+      ResourceId: !Ref TaxApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TaxCalculatorFunction.Arn}/invocations
+
+  # Grants API Gateway explicit permission to invoke the Lambda function when HTTP calls arrive.
+  TaxApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TaxCalculatorFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TaxApi}/*/*/*
+
+  # Publishes the API Gateway configuration to a live 'prod' stage once the POST method is created.
+  TaxApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - TaxApiMethod
+    Properties:
+      RestApiId: !Ref TaxApi
+      StageName: prod
+
+# Outputs print key endpoints and names directly to the console so we can easily link the frontend and verify resources.
+Outputs:
+  WebsiteURL:
+    Description: S3 Static Website URL
+    Value: !GetAtt TaxWebBucket.WebsiteURL
+
+  ApiEndpoint:
+    Description: API Gateway Invoke URL
+    Value: !Sub https://${TaxApi}.execute-api.${AWS::Region}.amazonaws.com/prod/calculate
+
+  AuditTableName:
+    Description: DynamoDB Table Name
+    Value: !Ref TaxAuditTable
+
+  NotificationTopicArn:
+    Description: SNS Topic ARN
+    Value: !Ref TaxAlertTopic
+
+# Explanation of each code Block
+  # Parameters - MyEmail - Asks for the user's email address during deployment so notifications can be delivered without hardcoding contact details.
+  # Parameters - MyEmail - cont - CloudFormation then injects this address into the SNS Topic subscription upon stack creation.
+  # DynamoDBTable - TaxAuditTable - Provisions an on-demand NoSQL database named PayrollTaxAuditLog so storage incurs per-request charges with zero idle cost.
+  # DynamoDBTable - CalculationId - Sets the partition key (HASH) to store and retrieve each estimate record uniquely.
+  # SNS Topic - TaxAlertTopic - Sets up an Amazon SNS notification topic and email subscription to the parameter address to dispatch alerts when calculations complete.
+  # S3Bucket - TaxWebBucket - Provisions an S3 storage bucket configured for static website hosting with index.html as the default document.
+  # S3Bucket - TaxWebBucket - cont - Enables web browsers to fetch the frontend interface without needing physical servers or VMs. Disables BlockPublicAccess so the website policy can attach.
+  # S3BucketPolicy - TaxWebBucketPolicy - Attaches a public read policy (s3:GetObject) specifically to files in the web bucket so visitors can load the HTML page in their browsers.
+  # IAM Role - LambdaExecutionRole - Gives AWS Lambda permission to execute by attaching AWS Managed Policies, granting write access to CloudWatch, DynamoDB records, and SNS.
+  # API Gateway - TaxApi & TaxApiResource - Sets up a public HTTPS REST API on the /calculate URL path, acting as the internet front door to receive traffic from the frontend.
+  # API Gateway Method - TaxApiMethod - Maps an HTTP POST method on /calculate directly to the Lambda function via Lambda Proxy Integration, forwarding the JSON request straight into Python's event['body'].
+  # Lambda Permission - TaxApiLambdaPermission - Explicitly authorizes API Gateway to trigger and run the Lambda function, preventing 500 authorization errors.
+  # API Gateway Deployment - TaxApiDeployment - Publishes configured API methods and routes to a live URL stage named 'prod', waiting on the POST method so the deployment contains the live route.
+  # Outputs - Prints the live S3 website link and API Gateway POST URL right on the CloudFormation screen when the build succeeds to test the application immediately.
+  # Pre-Tax Deductions - Subtracts annual voluntary pre-tax contributions (such as traditional 401k, Section 125 medical, and HSA) from gross pay to calculate taxable wages for progressive income tax withholding.
+  # Federal & CA Tax Bracket Code - Both Federal and California taxes use progressive tax brackets, meaning each slice of income is taxed at its respective marginal percentage.
+  # Federal tax bracket example - On a $30,000 gross salary, the first $11,600 is taxed at 10% and the remaining $18,400 is taxed at 12%, after which both taxed amounts are combined.
+  # CA tax bracket example - Follows the same progressive logic as Federal withholding, but applies California's statutory state income tax tiers.
+  # Social Security Tax - Assessed at 6.2% up to the statutory wage ceiling of $168,600, after which it stops accruing for the remainder of the tax year.
+  # Medicare Tax - Assessed at 1.45% for wages up to $200,000; any amount above $200,000 is taxed at the combined 2.35% rate (e.g., on $250,000, the first $200,000 is taxed at 1.45% and the remaining $50,000 at 2.35%).
