@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Payroll Tax Estimator</title>
+  
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="container">
+    <h2>Annual Payroll Tax Estimator</h2>
+    
+    <!-- User Input Fields -->
+    <div> 
+      <label for="grossPay">Projected Annual Gross Pay ($):</label><br>
+      <input type="number" id="grossPay" placeholder="e.g. 75000">
+    </div>
+    <br>
+    
+    <div> 
+      <label for="preTaxDeductions">Pre-Tax Retirement Deductions (e.g., 401k/403b) ($):</label><br>
+      <small style="color: #666; display: block; margin-top: 2px; margin-bottom: 6px; font-size: 11px; line-height: 1.3;">
+        *Exempt from income taxes only. Do not include Section 125 deductions (HSA, FSA, health premiums) which are exempt from FICA.
+      </small>
+      <input type="number" id="preTaxDeductions" placeholder="e.g. 5000" value="0">
+    </div>
+    <br>
+    
+    <!-- Submission trigger -->
+    <button onclick="calculateTax()">Calculate Withholding</button>
+    
+    <!-- Output Breakdown container -->
+    <div id="results">
+      <h3>Estimated Tax Breakdown</h3>
+      <p>Taxable Wage Base: $<span id="outTaxable">0.00</span></p>
+      <p>Federal Income Tax: $<span id="outFed">0.00</span></p>
+      <p>California State Tax: $<span id="outState">0.00</span></p>
+      <p>Social Security (6.2%): $<span id="outSS">0.00</span></p>
+      <p>Medicare (1.45% / 2.35%): $<span id="outMed">0.00</span></p>
+      <p>CA State Disability Insurance (1.1%): $<span id="outSDI">0.00</span></p>
+      <hr>
+      <p class="tax-highlight">Total Withholding: $<span id="outTotalTax">0.00</span></p>
+      <p class="net-highlight">Estimated Net Take-Home Pay: $<span id="outNet">0.00</span></p>
+    </div>
+  </div>
+    
+  <!-- JavaScript link file -->
+  <script src="script.js"></script>
+</body>
+</html>
