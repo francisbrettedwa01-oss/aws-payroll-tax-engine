@@ -26,6 +26,8 @@ An event-driven serverless web application deployed on AWS that calculates feder
 │   ├── index.html                                      # UI structure, form fields, and tax base disclaimers
 │   ├── style.css                                       # Responsive layout and styling
 │   └── script.js                                       # Client-side validation & API Gateway integration logic
+├── Set Instructions/
+│   └── Setup_Instructions.pdf                          # Setup, deployment, and teardown SOP guide
 ├── Project Screenshots/                                # Console deployment, browser tests, & verification proof
 ├── architecture-diagram.png                            # Serverless cloud architecture visual
 └── README.md                                           # Project documentation and deployment guide
