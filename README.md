@@ -11,7 +11,7 @@ An event-driven serverless web application deployed on AWS that calculates feder
 ### Key Architecture Components
 * **Amazon S3**: Hosts the static web frontend (`index.html`, `style.css`, `script.js`) configured for public static website hosting.
 * **Amazon API Gateway**: REST API managing CORS preflight (`OPTIONS` mock integration) and routing `POST` requests.
-* **AWS Lambda (Python 3.12)**: Serverless compute engine executing progressive California and federal tax logic.
+* **AWS Lambda (Python 3.9)**: Serverless compute engine executing progressive California and federal tax logic.
 * **Amazon DynamoDB**: On-Demand NoSQL table (`PayrollTaxAuditLog`) persisting calculation transactions with single-digit millisecond latency.
 * **Amazon SNS**: Decoupled pub/sub topic (`PayrollAlertTopic`) triggering notifications for completed payroll calculations.
 
@@ -21,7 +21,7 @@ An event-driven serverless web application deployed on AWS that calculates feder
 
 ```text
 ├── CloudFront YAML File/
-│   └── template.yaml                                   # AWS CloudFormation Infrastructure as Code (IaC) template
+│   └── template.yaml                                   # AWS CloudFormation Infrastructure as Code (IaC) template, embedded with Lambda Function (python code for tax calculator)
 ├── Payroll Tax Calculator Frontend UI for S3 (website)/# Application Source: Web Client
 │   ├── index.html                                      # UI structure, form fields, and tax base disclaimers
 │   ├── style.css                                       # Responsive layout and styling
